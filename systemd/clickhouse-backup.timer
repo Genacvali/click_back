@@ -1,0 +1,18 @@
+[Unit]
+Description=Ежедневный бэкап ClickHouse в S3 (02:30 UTC)
+Requires=clickhouse-backup.service
+
+[Timer]
+# Каждую ночь в 02:30 UTC
+OnCalendar=*-*-* 02:30:00 UTC
+
+# Если сервер был выключен в момент запуска — выполнить немедленно после старта
+Persistent=true
+
+# Случайный сдвиг ±5 минут, чтобы снизить нагрузку при горизонтальном масштабировании
+RandomizedDelaySec=300
+
+Unit=clickhouse-backup.service
+
+[Install]
+WantedBy=timers.target

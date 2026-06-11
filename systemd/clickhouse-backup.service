@@ -1,0 +1,24 @@
+[Unit]
+Description=ClickHouse → S3 Backup
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=clickhouse-backup
+EnvironmentFile=/etc/clickhouse-backup/backup.env
+
+# Полный путь до venv или системного Python
+ExecStart=/opt/clickhouse-backup/venv/bin/python /opt/clickhouse-backup/backup_clickhouse.py
+
+# Ограничение ресурсов
+TimeoutStartSec=7200
+MemoryMax=512M
+
+# Логи идут в journald — смотреть через: journalctl -u clickhouse-backup
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=clickhouse-backup
+
+[Install]
+WantedBy=multi-user.target

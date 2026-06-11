@@ -1,0 +1,8 @@
+# HTTP-клиент для ClickHouse (рекомендуется)
+clickhouse-connect>=0.7.0
+
+# TCP-клиент для ClickHouse (альтернатива)
+clickhouse-driver>=0.2.7
+
+# Работа с S3-совместимыми хранилищами (retention / очистка)
+boto3>=1.34.0
