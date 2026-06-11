@@ -51,6 +51,13 @@ REQUIRED_VARS = [
 ]
 
 
+def _normalize_endpoint(url: str) -> str:
+    """Добавляет https:// если схема не указана (совместимо с форматом Percona/OBS)."""
+    if url and not url.startswith(("http://", "https://")):
+        return "https://" + url
+    return url
+
+
 def get_env() -> dict:
     """Читает и валидирует конфигурацию из переменных окружения."""
     missing = [v for v in REQUIRED_VARS if not os.environ.get(v)]
@@ -67,8 +74,8 @@ def get_env() -> dict:
         "ch_database": os.environ.get("CLICKHOUSE_DATABASE", "default"),
         # "auto" — выбрать автоматически; "connect" — HTTP; "driver" — TCP
         "ch_client":   os.environ.get("CLICKHOUSE_CLIENT", "auto"),
-        # S3
-        "s3_endpoint":    os.environ["S3_ENDPOINT"],
+        # S3 — добавляем https:// если схема не указана (как в конфиге Percona)
+        "s3_endpoint":    _normalize_endpoint(os.environ["S3_ENDPOINT"]),
         "s3_bucket":      os.environ["S3_BUCKET"],
         "s3_access_key":  os.environ["S3_ACCESS_KEY"],
         "s3_secret_key":  os.environ["S3_SECRET_KEY"],
