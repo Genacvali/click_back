@@ -14,20 +14,12 @@ import boto3
 import yaml
 from botocore.exceptions import ClientError
 
-# ---------------------------------------------------------------------------
-# Логирование
-# ---------------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
 log = logging.getLogger("ch-backup")
-
-
-# ---------------------------------------------------------------------------
-# 1. Получение конфигурации из переменных окружения
-# ---------------------------------------------------------------------------
 
 REQUIRED_VARS = [
     "CLICKHOUSE_HOST",
@@ -38,14 +30,12 @@ REQUIRED_VARS = [
 
 
 def get_env() -> dict:
-    """Читает и валидирует конфигурацию из переменных окружения."""
     missing = [v for v in REQUIRED_VARS if not os.environ.get(v)]
     if missing:
         log.error("Отсутствуют обязательные переменные окружения: %s", ", ".join(missing))
         sys.exit(1)
 
     return {
-        # ClickHouse
         "ch_host":      os.environ["CLICKHOUSE_HOST"],
         "ch_tcp_port":  int(os.environ.get("CLICKHOUSE_TCP_PORT", "9000")),
         "ch_user":      os.environ.get("CLICKHOUSE_USER", "default"),
@@ -53,53 +43,28 @@ def get_env() -> dict:
         "ch_database":  os.environ.get("CLICKHOUSE_DATABASE", "ALL"),
         "ch_data_path": os.environ.get("CLICKHOUSE_DATA_PATH", "/var/lib/clickhouse"),
         "ch_secure":    os.environ.get("CLICKHOUSE_SECURE", "false").lower() == "true",
-
-        # S3
         "s3_bucket":           os.environ["S3_BUCKET"],
         "s3_access_key":       os.environ["S3_ACCESS_KEY"],
         "s3_secret_key":       os.environ["S3_SECRET_KEY"],
         "s3_region":           os.environ.get("S3_REGION", "us-east-1"),
         "s3_endpoint":         os.environ.get("S3_ENDPOINT", ""),
         "s3_path_prefix":      os.environ.get("S3_PATH_PREFIX", "clickhouse-backups"),
-        # force_path_style=true нужен для MinIO и других S3-совместимых хранилищ
         "s3_force_path_style": os.environ.get("S3_FORCE_PATH_STYLE", "false").lower() == "true",
         "s3_disable_ssl":      os.environ.get("S3_DISABLE_SSL", "false").lower() == "true",
-
-        # Путь к бинарнику clickhouse-backup (если не в $PATH)
         "cb_binary": os.environ.get("CLICKHOUSE_BACKUP_BINARY", "clickhouse-backup"),
-
-        # Поведение
         "dry_run":        os.environ.get("DRY_RUN", "false").lower() == "true",
         "retention_days": int(os.environ.get("BACKUP_RETENTION_DAYS", "30")),
-
-        # Таймаут на весь процесс создания бэкапа
         "backup_timeout": int(os.environ.get("BACKUP_TIMEOUT_SECONDS", "3600")),
     }
 
 
-# ---------------------------------------------------------------------------
-# 2. Формирование имени бэкапа
-# ---------------------------------------------------------------------------
-
 def build_backup_name(cfg: dict) -> str:
-    """
-    Возвращает имя бэкапа с timestamp, например: metrics_db_2026-06-08_02-30-00
-    clickhouse-backup сам использует это имя как директорию в S3.
-    """
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
     db_label = cfg["ch_database"].lower().replace(" ", "_")
     return f"{db_label}_{ts}"
 
 
-# ---------------------------------------------------------------------------
-# 3. Генерация временного config.yml для clickhouse-backup
-# ---------------------------------------------------------------------------
-
 def _build_config(cfg: dict) -> dict:
-    """
-    Собирает словарь конфигурации clickhouse-backup v1.x.
-    Документация: https://github.com/Altinity/clickhouse-backup#default-config
-    """
     s3_cfg: dict[str, Any] = {
         "access_key":        cfg["s3_access_key"],
         "secret_key":        cfg["s3_secret_key"],
@@ -108,14 +73,10 @@ def _build_config(cfg: dict) -> dict:
         "path":              cfg["s3_path_prefix"].strip("/"),
         "disable_ssl":       cfg["s3_disable_ssl"],
         "force_path_style":  cfg["s3_force_path_style"],
-        # tar — совместим с CH 21; gz/bz2/zstd — опционально
         "compression_format": os.environ.get("S3_COMPRESSION_FORMAT", "tar"),
         "compression_level":  int(os.environ.get("S3_COMPRESSION_LEVEL", "1")),
-        # Количество параллельных загрузок
         "concurrency":        int(os.environ.get("S3_CONCURRENCY", "2")),
-        # 512 МиБ на парт — оптимально для больших баз
         "part_size":          512 * 1024 * 1024,
-        # Не хранить старые бэкапы через встроенный механизм — управляем сами
         "overwrite":          False,
     }
 
@@ -124,23 +85,20 @@ def _build_config(cfg: dict) -> dict:
 
     return {
         "general": {
-            "remote_storage":           "s3",
-            "disable_progress_bar":     False,
-            # 0 = не удалять локальные бэкапы автоматически (удалим сами после upload)
-            "backups_to_keep_local":    1,
-            # 0 = управляем retention через boto3
-            "backups_to_keep_remote":   0,
+            "remote_storage":         "s3",
+            "disable_progress_bar":   False,
+            "backups_to_keep_local":  1,
+            "backups_to_keep_remote": 0,
         },
         "clickhouse": {
-            "username":                cfg["ch_user"],
-            "password":                cfg["ch_password"],
-            "host":                    cfg["ch_host"],
-            "port":                    cfg["ch_tcp_port"],
-            "data_path":               cfg["ch_data_path"],
-            "secure":                  cfg["ch_secure"],
-            "skip_verify":             False,
-            "sync_replicated_tables":  True,
-            # Пропускаем служебные таблицы
+            "username":               cfg["ch_user"],
+            "password":               cfg["ch_password"],
+            "host":                   cfg["ch_host"],
+            "port":                   cfg["ch_tcp_port"],
+            "data_path":              cfg["ch_data_path"],
+            "secure":                 cfg["ch_secure"],
+            "skip_verify":            False,
+            "sync_replicated_tables": True,
             "skip_tables": [
                 "system.*",
                 "information_schema.*",
@@ -153,10 +111,6 @@ def _build_config(cfg: dict) -> dict:
 
 
 def write_config(cfg: dict) -> str:
-    """
-    Записывает config.yml во временный файл.
-    Возвращает путь к файлу. Вызывающий код должен удалить файл после использования.
-    """
     config_dict = _build_config(cfg)
 
     fd, path = tempfile.mkstemp(prefix="ch_backup_config_", suffix=".yml")
@@ -170,18 +124,9 @@ def write_config(cfg: dict) -> str:
     return path
 
 
-# ---------------------------------------------------------------------------
-# 4. Запуск clickhouse-backup create_remote
-# ---------------------------------------------------------------------------
-
 def run_backup(cfg: dict, backup_name: str, config_path: str) -> subprocess.Popen:
-    """
-    Запускает clickhouse-backup create_remote в фоне и возвращает Popen-объект.
-    Секретный ключ в лог не попадает (он только в config_path).
-    """
     binary = cfg["cb_binary"]
 
-    # Проверяем, что бинарник доступен
     if not shutil.which(binary):
         log.error(
             "Бинарник '%s' не найден. Установите clickhouse-backup v1.x:\n"
@@ -192,7 +137,6 @@ def run_backup(cfg: dict, backup_name: str, config_path: str) -> subprocess.Pope
 
     cmd = [binary, "create_remote", "--config", config_path]
 
-    # Если бэкап только одной БД — фильтруем по паттерну db.*
     if cfg["ch_database"].upper() != "ALL":
         cmd += ["--tables", f"{cfg['ch_database']}.*"]
 
@@ -203,24 +147,15 @@ def run_backup(cfg: dict, backup_name: str, config_path: str) -> subprocess.Pope
     proc = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,  # stderr → stdout, читаем один поток
+        stderr=subprocess.STDOUT,
         text=True,
-        bufsize=1,                 # построчная буферизация
+        bufsize=1,
     )
     log.info("Процесс запущен, PID=%d", proc.pid)
     return proc
 
 
-# ---------------------------------------------------------------------------
-# 5. Ожидание завершения (мониторинг вывода + таймаут)
-# ---------------------------------------------------------------------------
-
 def wait_backup_status(proc: subprocess.Popen, backup_name: str, cfg: dict) -> bool:
-    """
-    Читает вывод clickhouse-backup в реальном времени, логирует каждую строку.
-    Ждёт завершения процесса с учётом таймаута.
-    Возвращает True при успехе, False при ошибке.
-    """
     log.info(
         "Мониторим выполнение backup_name=%s (таймаут=%ds)...",
         backup_name,
@@ -231,11 +166,9 @@ def wait_backup_status(proc: subprocess.Popen, backup_name: str, cfg: dict) -> b
     proc_stdout = proc.stdout
 
     try:
-        # Читаем вывод построчно — пока процесс не закроет stdout
         for line in proc_stdout:
             log.info("[clickhouse-backup] %s", line.rstrip())
 
-        # stdout закрыт — ждём завершения процесса
         proc.wait(timeout=timeout)
 
     except subprocess.TimeoutExpired:
@@ -262,16 +195,10 @@ def wait_backup_status(proc: subprocess.Popen, backup_name: str, cfg: dict) -> b
     return False
 
 
-# ---------------------------------------------------------------------------
-# 6. Удаление старых бэкапов из S3 (retention)
-# ---------------------------------------------------------------------------
-
-# Паттерн для парсинга timestamp из имени бэкапа: "db_2026-06-08_02-30-00"
 _BACKUP_TS_RE = re.compile(r"(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})$")
 
 
 def _parse_backup_timestamp(name: str) -> Optional[datetime]:
-    """Парсит timestamp из имени бэкапа вида 'db_name_2026-06-08_02-30-00'."""
     match = _BACKUP_TS_RE.search(name)
     if not match:
         return None
@@ -284,11 +211,6 @@ def _parse_backup_timestamp(name: str) -> Optional[datetime]:
 
 
 def _delete_s3_prefix(s3_client: Any, bucket: str, prefix: str) -> int:
-    """
-    Пакетно удаляет все S3-объекты под указанным префиксом.
-    Использует delete_objects (до 1000 объектов за вызов).
-    Возвращает количество удалённых объектов.
-    """
     paginator = s3_client.get_paginator("list_objects_v2")
     deleted_total = 0
 
@@ -308,12 +230,6 @@ def _delete_s3_prefix(s3_client: Any, bucket: str, prefix: str) -> int:
 
 
 def cleanup_old_backups(cfg: dict) -> None:
-    """
-    Удаляет бэкапы старше BACKUP_RETENTION_DAYS дней из S3.
-
-    Определяет дату бэкапа по timestamp в имени директории (не по LastModified),
-    что защищает от ложных срабатываний при копировании объектов.
-    """
     retention = cfg["retention_days"]
     if retention <= 0:
         log.info("Retention отключён (BACKUP_RETENTION_DAYS=%d), пропускаем очистку.", retention)
@@ -334,7 +250,6 @@ def cleanup_old_backups(cfg: dict) -> None:
         log.info("[DRY-RUN] Очистка S3 не выполняется.")
         return
 
-    # Параметры подключения к S3
     s3_kwargs: dict[str, Any] = {
         "aws_access_key_id":     cfg["s3_access_key"],
         "aws_secret_access_key": cfg["s3_secret_key"],
@@ -345,7 +260,6 @@ def cleanup_old_backups(cfg: dict) -> None:
 
     s3 = boto3.client("s3", **s3_kwargs)
 
-    # Получаем список "директорий" бэкапов через delimiter — избегаем перебора всех объектов
     paginator = s3.get_paginator("list_objects_v2")
     backup_prefixes: list[str] = []
     for page in paginator.paginate(
@@ -360,7 +274,6 @@ def cleanup_old_backups(cfg: dict) -> None:
 
     deleted_count = 0
     for bp in backup_prefixes:
-        # bp = "clickhouse-backups/metrics_db_2026-06-08_02-30-00/"
         backup_dir = bp.rstrip("/").split("/")[-1]
         backup_dt = _parse_backup_timestamp(backup_dir)
 
@@ -384,12 +297,8 @@ def cleanup_old_backups(cfg: dict) -> None:
     log.info("Очистка завершена. Удалено бэкапов: %d", deleted_count)
 
 
-# ---------------------------------------------------------------------------
-# 7. Точка входа
-# ---------------------------------------------------------------------------
-
 def main() -> None:
-    log.info("=== ClickHouse Backup Script started (clickhouse-backup v1.x) ===")
+    log.info("=== ClickHouse Backup Script started ===")
 
     cfg = get_env()
     backup_name = build_backup_name(cfg)
@@ -403,7 +312,6 @@ def main() -> None:
         backup_name,
     )
 
-    # Dry-run: показать что будет выполнено, не запуская бэкап
     if cfg["dry_run"]:
         tables_flag = (
             ""
@@ -421,7 +329,6 @@ def main() -> None:
         cleanup_old_backups(cfg)
         sys.exit(0)
 
-    # Пишем временный конфиг (секрет только в файле, не в аргументах процесса)
     config_path: Optional[str] = None
     proc: Optional[subprocess.Popen] = None
     success = False
@@ -440,7 +347,6 @@ def main() -> None:
         sys.exit(1)
 
     finally:
-        # Удаляем временный конфиг с секретами
         if config_path and os.path.exists(config_path):
             os.unlink(config_path)
             log.debug("Временный конфиг удалён.")
@@ -449,11 +355,9 @@ def main() -> None:
         log.error("Бэкап завершился неуспешно.")
         sys.exit(1)
 
-    # Retention — запускаем только после успешного бэкапа
     try:
         cleanup_old_backups(cfg)
     except Exception as exc:
-        # Ошибка очистки не должна ломать exit code успешного бэкапа
         log.warning("Ошибка при очистке старых бэкапов: %s", exc)
 
     log.info("=== Бэкап успешно завершён: %s ===", backup_name)
